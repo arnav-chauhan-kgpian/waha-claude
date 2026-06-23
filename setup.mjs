@@ -15,7 +15,9 @@
 // Re-runs are safe: if .mcp.json already has a token, it's reused.
 
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as wait } from "node:timers/promises";
@@ -79,6 +81,41 @@ async function ask(prompt, def = "") {
   const v = (await rl.question(`${prompt}${suffix}: `)).trim();
   rl.close();
   return v || def;
+}
+
+function claudeDesktopConfigPath() {
+  if (process.platform === "darwin") {
+    return `${homedir()}/Library/Application Support/Claude/claude_desktop_config.json`;
+  }
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA ?? `${homedir()}\\AppData\\Roaming`;
+    return `${appData}\\Claude\\claude_desktop_config.json`;
+  }
+  return `${homedir()}/.config/Claude/claude_desktop_config.json`;
+}
+
+function isClaudeDesktopInstalled() {
+  // We treat "Claude config dir exists" as "the app has been run at least once".
+  return existsSync(dirname(claudeDesktopConfigPath()));
+}
+
+async function maybeInstallDesktopConfig(mcpConfig) {
+  const path = claudeDesktopConfigPath();
+  let existing = {};
+  if (existsSync(path)) {
+    try {
+      existing = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      console.log(`\n${path} exists but isn't valid JSON. Skipping Desktop install — fix the file first and re-run.`);
+      return false;
+    }
+  } else {
+    mkdirSync(dirname(path), { recursive: true });
+  }
+  existing.mcpServers = existing.mcpServers || {};
+  existing.mcpServers.whatsapp = mcpConfig.mcpServers.whatsapp;
+  writeFileSync(path, JSON.stringify(existing, null, 2) + "\n");
+  return true;
 }
 
 async function main() {
@@ -179,25 +216,62 @@ async function main() {
   writeFileSync(".mcp.json", JSON.stringify(mcpConfig, null, 2) + "\n");
   console.log("Wrote .mcp.json (Claude Code will pick it up when launched from this directory).\n");
 
-  // 7. Done
+  // 7. Wire up the Claude clients the user actually uses
   console.log("================================================================");
-  console.log("All set. The backend is at " + BASE);
+  console.log("Backend ready at " + BASE);
   console.log("================================================================\n");
+  console.log("Which Claude do you use?");
+  console.log("  1) Claude Desktop          (recommended — works locally, no tunnel)");
+  console.log("  2) Claude.ai (web)         (needs a Cloudflare Tunnel)");
+  console.log("  3) Claude Code CLI         (.mcp.json already wired in this dir)");
+  console.log("  4) All / I'll decide later (print configs for everything)\n");
+  const choice = await ask("Pick 1/2/3/4", "1");
 
-  console.log("Claude Code (recommended): from this directory, run `claude`. When");
-  console.log("it asks about MCP servers from .mcp.json, say yes. Then prompt:\n");
-  console.log("    Connect my WhatsApp\n");
+  const printDesktopBlock = () => {
+    console.log("\nClaude Desktop config block (already merged if you picked 1):");
+    console.log("  File: " + claudeDesktopConfigPath());
+    console.log(JSON.stringify(mcpConfig, null, 2));
+  };
+  const printWebBlock = () => {
+    console.log("\nClaude.ai web setup:");
+    console.log("  1. Install cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/");
+    console.log("  2. In a separate terminal: cloudflared tunnel --url " + BASE);
+    console.log("  3. Copy the printed https://<random>.trycloudflare.com URL.");
+    console.log("  4. claude.ai → Settings → Connectors → Add custom connector:");
+    console.log("     URL:    <that URL>/mcp");
+    console.log("     Header: Authorization: Bearer <token from .mcp.json>");
+  };
+  const printCliNote = () => {
+    console.log("\nClaude Code CLI: `.mcp.json` is in this directory. From a fresh");
+    console.log("terminal where the `claude` command is on PATH, run:");
+    console.log("    cd " + process.cwd());
+    console.log("    claude");
+    console.log("Then ask: Connect my WhatsApp");
+  };
 
-  console.log("Claude Desktop: add this block to your claude_desktop_config.json");
-  console.log("(macOS: ~/Library/Application Support/Claude/, Windows: %APPDATA%\\Claude\\):\n");
-  console.log(JSON.stringify(mcpConfig, null, 2));
-  console.log();
+  if (choice === "1" || choice === "4") {
+    if (!isClaudeDesktopInstalled() && choice === "1") {
+      console.log("\nClaude Desktop config dir not found at " + dirname(claudeDesktopConfigPath()));
+      console.log("Install Claude Desktop from https://claude.ai/download, run it once, then re-run this script.");
+    } else {
+      const installed = await maybeInstallDesktopConfig(mcpConfig);
+      if (installed) {
+        console.log("\nMerged the WhatsApp connector into Claude Desktop's config.");
+        console.log("→ Restart Claude Desktop, then ask it: \"Connect my WhatsApp\".");
+      }
+    }
+    if (choice === "4") printDesktopBlock();
+  }
 
-  console.log("Claude.ai web: localhost isn't reachable from claude.ai. If you want");
-  console.log("web access, run `cloudflared tunnel --url " + BASE + "` and use the");
-  console.log("public URL it prints in your custom connector.\n");
+  if (choice === "2" || choice === "4") {
+    printWebBlock();
+  }
 
-  console.log("Useful:");
+  if (choice === "3" || choice === "4") {
+    printCliNote();
+  }
+
+  console.log("\nUseful:");
   console.log("  docker compose logs -f backend      # tail logs");
   console.log("  docker compose down                 # stop, keep data");
   console.log("  docker compose down -v              # stop and wipe everything");

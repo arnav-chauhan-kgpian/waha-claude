@@ -10,9 +10,12 @@ You talk to Claude. Claude talks to a small backend running locally. The backend
 
 You need:
 - **Docker Desktop** ([download](https://www.docker.com/products/docker-desktop/)) — running.
-- A **WAHA Plus access token** from [waha.devlike.pro](https://waha.devlike.pro/) (this is the only thing that costs money — it gates the WhatsApp gateway image).
+- A **WAHA Plus access token** from [waha.devlike.pro](https://waha.devlike.pro/) (the only thing that costs money — it gates the WhatsApp gateway image).
 - **Node.js 18+** ([download](https://nodejs.org/)) — only for the one-shot setup script.
-- A **Claude client** that supports HTTP MCP servers: Claude Code (easiest), Claude Desktop, or Claude.ai web (needs a public tunnel — see below).
+- A **Claude client**. Any of:
+  - **Claude Desktop** ([download](https://claude.ai/download)) — easiest, recommended. Native app, works locally, no tunnel.
+  - **Claude.ai (web)** — works from any browser; needs a free Cloudflare Tunnel (the script tells you how).
+  - **Claude Code CLI** — if you already have it on PATH.
 
 Then:
 
@@ -24,18 +27,18 @@ docker login                     # username: devlikeapro, password: your WAHA Pl
 node setup.mjs                   # or: ./setup.sh (Unix) / setup.cmd (Windows)
 ```
 
-`setup.mjs` will:
-1. Generate strong random keys in `.env`.
+`setup.mjs` is interactive — it asks which Claude client you use and wires it up:
+1. Generates strong random keys in `.env`.
 2. `docker compose up -d --build` — pulls WAHA, builds the backend.
-3. Wait for it to come up, sign you up, mint your bearer token.
-4. Write `.mcp.json` so Claude Code picks it up automatically.
-5. Print copy-paste config for Claude Desktop / Claude.ai web.
+3. Waits for it to come up, signs you up, mints your bearer token.
+4. **If you pick Claude Desktop**: merges the WhatsApp connector into your `claude_desktop_config.json` automatically.
+5. **If you pick Claude.ai web**: prints the exact `cloudflared` + connector setup.
+6. **If you pick the CLI**: writes `.mcp.json` so `claude` in this directory just works.
 
-Then in **Claude Code** (from this directory):
+Then in your Claude (restart Claude Desktop first if you picked that), ask:
 
 ```
-claude
-> Connect my WhatsApp
+Connect my WhatsApp
 ```
 
 Claude shows a QR inline. You scan with WhatsApp → Settings → Linked devices → Link a device. Done.
