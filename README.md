@@ -17,7 +17,7 @@ You need:
 Then:
 
 ```bash
-git clone <this repo>
+git clone https://github.com/arnav-chauhan-kgpian/waha-claude.git
 cd waha-claude
 
 docker login                     # username: devlikeapro, password: your WAHA Plus token
