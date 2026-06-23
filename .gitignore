@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+*.log
+# Cover server/data/ and any other server/data*/ smoke/scratch dirs
+server/data*/
+*.db
+*.db-shm
+*.db-wal
+.mcp.json
+tmp/

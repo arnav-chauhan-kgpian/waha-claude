@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Connect WhatsApp to Claude</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 680px; margin: 40px auto; padding: 0 20px; line-height: 1.5; }
+  h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.15rem; margin-top: 28px; }
+  p.lede { opacity: 0.75; margin-top: 0; }
+  form { display: flex; gap: 8px; margin: 24px 0; flex-wrap: wrap; }
+  input { flex: 1; min-width: 200px; padding: 10px 12px; font-size: 1rem; border: 1px solid #888; border-radius: 6px; background: transparent; color: inherit; }
+  button { padding: 10px 16px; font-size: 1rem; border: 0; border-radius: 6px; background: #1f6feb; color: white; cursor: pointer; }
+  pre { background: #0001; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 0.9rem; }
+  .error { color: #c0392b; }
+  .ok { color: #1f6feb; }
+  code { background: #0001; padding: 2px 4px; border-radius: 3px; }
+  details { background: #0001; padding: 8px 12px; border-radius: 6px; margin-top: 8px; }
+  summary { cursor: pointer; }
+</style>
+</head>
+<body>
+  <h1>Connect WhatsApp to Claude</h1>
+  <p class="lede">This is the only browser step. Sign up to get a personal token, then add this server to your Claude as an MCP connector. Everything after that — connecting, summarizing, drafting, sending — happens inside Claude.</p>
+
+  <form id="f">
+    <input id="email" type="email" placeholder="you@example.com" autocomplete="email" required />
+    <input id="invite" type="text" placeholder="invite code" style="display:none" />
+    <button>Get token</button>
+  </form>
+
+  <div id="out"></div>
+
+  <script>
+    const f = document.getElementById('f');
+    const out = document.getElementById('out');
+    const inviteEl = document.getElementById('invite');
+
+    fetch('/signup/required').then(r => r.json()).then(d => {
+      if (d.invite_code_required) inviteEl.style.display = '';
+    }).catch(() => {});
+
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      out.innerHTML = '<p>Working…</p>';
+      const email = document.getElementById('email').value;
+      const body = { email };
+      if (inviteEl.value) body.invite_code = inviteEl.value;
+      const res = await fetch('/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        out.innerHTML = '<p class="error">' + (data.error || 'failed') + '</p>';
+        return;
+      }
+      out.innerHTML = `
+        <h2 class="ok">You're in.</h2>
+        <p><b>Save this token now</b> — it is shown once and cannot be recovered.</p>
+        <pre id="tok">${data.token}</pre>
+
+        <h2>Add to Claude</h2>
+        <details open>
+          <summary><b>Claude.ai (web) or Claude Desktop</b></summary>
+          <p>Settings → Connectors → Add custom connector. Use:</p>
+          <pre>URL:    ${data.mcp_url}
+Header: Authorization: Bearer ${data.token}</pre>
+        </details>
+
+        <details>
+          <summary><b>Claude Code (terminal)</b></summary>
+          <p>From any terminal:</p>
+          <pre>claude mcp add --transport http whatsapp ${data.mcp_url} \\
+  --header "Authorization: Bearer ${data.token}"</pre>
+        </details>
+
+        <h2>Then in Claude</h2>
+        <p>Ask: <code>Connect my WhatsApp</code>. Claude will show the QR inline — scan with WhatsApp → Settings → Linked devices → Link a device.</p>
+        <p>That's the whole setup. You can close this tab.</p>
+      `;
+    });
+  </script>
+</body>
+</html>

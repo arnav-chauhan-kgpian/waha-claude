@@ -1,0 +1,54 @@
+# Local testing stack: WAHA Plus + the backend on your laptop.
+# Read LOCAL.md before running.
+#
+#   docker compose up -d              # both services
+#   docker compose up -d waha         # only WAHA (then run `npm run dev` for fast backend iteration)
+
+services:
+  waha:
+    image: devlikeapro/waha-plus:latest
+    container_name: waha-plus
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env}
+      WHATSAPP_DEFAULT_ENGINE: NOWEB
+      WAHA_PRINT_QR: "false"
+      WAHA_LOG_LEVEL: info
+      WAHA_DASHBOARD_ENABLED: "false"
+    volumes:
+      - waha_sessions:/app/.sessions
+      - waha_media:/app/.media
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: waha-claude-backend
+    restart: unless-stopped
+    depends_on:
+      - waha
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      WAHA_URL: http://waha:3000
+      WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      PORT: "8080"
+      DATA_DIR: /app/data
+      INVITE_CODE: ${INVITE_CODE:-local-dev}
+      SEND_MAX_PER_WINDOW: ${SEND_MAX_PER_WINDOW:-30}
+      SEND_WINDOW_SECONDS: ${SEND_WINDOW_SECONDS:-60}
+    volumes:
+      - backend_data:/app/data
+
+volumes:
+  waha_sessions:
+  waha_media:
+  backend_data:

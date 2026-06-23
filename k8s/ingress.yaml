@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: waha-claude
+  namespace: waha-claude
+  annotations:
+    # cert-manager (install separately). Set the issuer name you use.
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # NGINX Ingress hints — drop or swap if you use a different controller.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "2m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - wa.example.com
+      secretName: waha-claude-tls
+  rules:
+    - host: wa.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: waha-claude
+                port:
+                  number: 80

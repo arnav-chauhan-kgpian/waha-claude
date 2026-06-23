@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: waha-claude
+  namespace: waha-claude
+  labels:
+    app: waha-claude
+spec:
+  # SQLite-on-PVC means single-replica. Bump to Postgres if you need HA.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: waha-claude
+  template:
+    metadata:
+      labels:
+        app: waha-claude
+    spec:
+      # Uncomment if pulling from a private GitLab registry. The secret is
+      # created in HANDOFF.md → "Pulling from a private GitLab registry".
+      # imagePullSecrets:
+      #   - name: gitlab-pull
+      containers:
+        - name: api
+          image: registry.gitlab.com/your-group/waha-claude:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: waha-claude-config
+            - secretRef:
+                name: waha-claude-secrets
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: waha-claude-data

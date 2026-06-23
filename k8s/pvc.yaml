@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: waha-claude-data
+  namespace: waha-claude
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  # On AKS, set this to your preferred StorageClass (e.g. managed-csi, azurefile-csi).
+  # storageClassName: managed-csi
