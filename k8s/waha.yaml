@@ -1,0 +1,134 @@
+# WAHA Plus — the WhatsApp engine the waha-claude backend talks to.
+#
+# Runs as its OWN service (never embedded in the Node backend). The backend
+# reaches it over the cluster network via WAHA_URL; that's set in
+# k8s/configmap.yaml to:
+#
+#     WAHA_URL = http://waha.waha-claude-prod.svc.cluster.local:3000
+#
+# The API key is the single source of truth: WAHA validates X-Api-Key
+# against WHATSAPP_API_KEY (set below from waha-claude-secrets.WAHA_API_KEY),
+# and the backend sends the same value as its X-Api-Key header.
+#
+# Apply:
+#   kubectl -n waha-claude-prod apply -f k8s/waha.yaml
+#
+# Prerequisite: WAHA Plus is a PRIVATE image. Create a pull secret once:
+#   kubectl -n waha-claude-prod create secret docker-registry waha-plus-pull \
+#     --docker-server=docker.io \
+#     --docker-username=<devlikeapro-user> \
+#     --docker-password=<devlikeapro-token>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: waha-sessions
+  namespace: waha-claude-prod
+  labels:
+    app: waha
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # Holds the NOWEB session store + paired-device auth. Pairings survive
+      # pod restarts only because this volume does — do not delete it.
+      storage: 5Gi
+  # storageClassName omitted → uses the cluster default (AKS: managed-csi).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: waha
+  namespace: waha-claude-prod
+  labels:
+    app: waha
+spec:
+  replicas: 1
+  # Recreate (not RollingUpdate): the PVC is ReadWriteOnce, so two pods can't
+  # mount it at once. Recreate tears down the old pod before starting the new.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: waha
+  template:
+    metadata:
+      labels:
+        app: waha
+    spec:
+      imagePullSecrets:
+        - name: waha-plus-pull
+      containers:
+        - name: waha
+          # Pin a specific version for prod instead of :latest once validated.
+          image: devlikeapro/waha-plus:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          env:
+            # NOWEB engine — fast, no headless Chrome. WEBJS is heavier and
+            # has caused 500s + multi-second reads in testing; do not switch
+            # back without reason.
+            - name: WHATSAPP_DEFAULT_ENGINE
+              value: "NOWEB"
+            # Restart saved sessions automatically after a pod restart so
+            # paired users don't have to re-scan the QR.
+            - name: WHATSAPP_RESTART_ALL_SESSIONS
+              value: "True"
+            # API key WAHA enforces on every request — must equal the
+            # backend's WAHA_API_KEY. Shared from waha-claude-secrets.
+            - name: WHATSAPP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: waha-claude-secrets
+                  key: WAHA_API_KEY
+          volumeMounts:
+            - name: sessions
+              mountPath: /app/.sessions
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1500Mi
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 3000
+            initialDelaySeconds: 45
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 4
+      volumes:
+        - name: sessions
+          persistentVolumeClaim:
+            claimName: waha-sessions
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: waha
+  namespace: waha-claude-prod
+  labels:
+    app: waha
+spec:
+  # ClusterIP only — WAHA must NOT be publicly exposed. It's reachable solely
+  # from inside the cluster (the waha-claude backend). No Ingress on purpose.
+  type: ClusterIP
+  selector:
+    app: waha
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000

@@ -1,69 +1,128 @@
-# Deploying the WhatsApp backend on AKS
+# waha-claude Kubernetes Deploy
 
-Assumes your WAHA Plus is already running in the cluster in namespace `waha`
-exposed as Service `waha:3000`, and NGINX Ingress + cert-manager are installed.
-Adjust the manifests if your setup differs.
+Mirrors the cadence-summarizer deploy pattern (AKS `limekit-prod` cluster,
+ACR `acrlcpub`, Traefik ingress, cert-manager) but in its own namespace
+`waha-claude-prod` so the two products don't share a WAHA Plus instance or
+collide on Service / PVC names.
 
-## 1. Build and push the image
+## Files
 
-```bash
-# from repo root
-az acr login --name <your-acr>     # or docker login ghcr.io
-docker build -t <registry>/waha-claude:0.1.0 .
-docker push <registry>/waha-claude:0.1.0
-```
+| File | Purpose |
+|---|---|
+| `namespace.yaml` | `waha-claude-prod` namespace |
+| `configmap.yaml` | Non-secret runtime config |
+| `secret.example.yaml` | Template for required runtime secrets (keys only, no values) |
+| `secret.yaml` | Secret manifest with real values, applied directly (NOT committed) |
+| `deployment.yaml` | `waha-claude` Deployment + its `waha-claude-data` PVC (SQLite) |
+| `service.yaml` | Service on port `8080` |
+| `ingress.yaml` | Traefik ingress for `waha-claude.limechat.ai` |
+| `waha.yaml` | WAHA Plus engine (PVC + Deployment + Service), in-cluster only |
 
-Update `image:` in `deployment.yaml` to the tag you just pushed.
-
-## 2. Edit the placeholders
-
-- `configmap.yaml` — set `PUBLIC_BASE_URL` to your public hostname and `WAHA_URL`
-  to the in-cluster URL for WAHA.
-- `ingress.yaml` — replace `wa.example.com` with your hostname and
-  `letsencrypt-prod` with the cluster issuer you have configured.
-
-## 3. Create the namespace + secrets
+## Build
 
 ```bash
-kubectl apply -f namespace.yaml
-
-kubectl -n waha-claude create secret generic waha-claude-secrets \
-  --from-literal=WAHA_API_KEY='<same key as your WAHA pod>' \
-  --from-literal=INVITE_CODE='<random invite code>'
+docker build -f Dockerfile -t acrlcpub.azurecr.io/waha-claude:prod .
+az acr login --name acrlcpub
+docker push acrlcpub.azurecr.io/waha-claude:prod
 ```
 
-If you prefer GitOps, copy `secret.example.yaml` to `secret.yaml`, populate, and
-seal it with SealedSecrets or wire it through ExternalSecrets — do NOT commit
-plain values.
+---
 
-## 4. Apply
+## Full deploy runbook (with WhatsApp / WAHA Plus)
 
+Run from a shell authenticated to the AKS cluster (context `limekit-prod`) and
+to ACR. Order matters: namespace → registry pull secret → app secret → WAHA → app.
+
+### Prerequisites
+- `kubectl` access to the cluster; ACR push rights (`az acr login --name acrlcpub`)
+- **devlikeapro Docker Hub credentials** (the WAHA Plus image is private)
+- A populated `k8s/secret.yaml` (real values, delivered out of band — never committed)
+
+### 1. Namespace
 ```bash
-kubectl apply -f configmap.yaml
-kubectl apply -f pvc.yaml
-kubectl apply -f deployment.yaml
-kubectl apply -f service.yaml
-kubectl apply -f ingress.yaml
-kubectl apply -f networkpolicy.yaml   # optional, recommended
+kubectl apply -f k8s/namespace.yaml
 ```
 
-## 5. Verify
-
+### 2. Registry pull secret for the private WAHA Plus image
 ```bash
-kubectl -n waha-claude rollout status deploy/waha-claude
-curl -fsS https://wa.example.com/healthz   # → {"ok":true}
+kubectl -n waha-claude-prod create secret docker-registry waha-plus-pull \
+  --docker-server=docker.io \
+  --docker-username=<devlikeapro-user> \
+  --docker-password=<devlikeapro-token>
 ```
+
+### 3. Apply the app secret
+```bash
+kubectl -n waha-claude-prod apply -f k8s/secret.yaml
+```
+`waha-claude-secrets` must contain:
+```
+WAHA_API_KEY = <strong random string>
+INVITE_CODE  = <strong random string — gates /signup>
+```
+The WAHA pod reads the same `WAHA_API_KEY` automatically via secretKeyRef
+(wired in `waha.yaml`), so don't add a separate entry for it.
+
+### 4. Build & push the app image
+```bash
+docker build -f Dockerfile -t acrlcpub.azurecr.io/waha-claude:prod .
+az acr login --name acrlcpub
+docker push acrlcpub.azurecr.io/waha-claude:prod
+```
+
+### 5. Deploy WAHA first (so WAHA_URL resolves before the backend starts)
+```bash
+kubectl -n waha-claude-prod apply -f k8s/waha.yaml
+kubectl -n waha-claude-prod rollout status deployment waha
+```
+
+### 6. Deploy the app
+```bash
+kubectl -n waha-claude-prod apply -f k8s/configmap.yaml
+kubectl -n waha-claude-prod apply -f k8s/deployment.yaml
+kubectl -n waha-claude-prod apply -f k8s/service.yaml
+kubectl -n waha-claude-prod apply -f k8s/ingress.yaml
+kubectl -n waha-claude-prod rollout restart deployment waha-claude
+kubectl -n waha-claude-prod rollout status deployment waha-claude
+```
+
+### 7. Verify
+```bash
+kubectl -n waha-claude-prod get pods -l app=waha-claude
+kubectl -n waha-claude-prod get pods -l app=waha
+
+kubectl -n waha-claude-prod exec deploy/waha-claude -- \
+  wget -qO- http://localhost:8080/healthz
+
+# WAHA reachable from the app pod
+kubectl -n waha-claude-prod exec deploy/waha-claude -- \
+  wget -qO- --header="X-Api-Key: <WAHA_API_KEY>" http://waha:3000/api/sessions
+```
+At `https://waha-claude.limechat.ai/healthz` you should see `{"ok":true}`.
+
+### Gotchas
+- **`waha` pod `ImagePullBackOff`** → wrong `waha-plus-pull` creds (step 2).
+- **App pod can't reach WAHA** → `WAHA_URL` in `configmap.yaml` doesn't match
+  the WAHA Service DNS name. Should be
+  `http://waha.waha-claude-prod.svc.cluster.local:3000`.
+- **`/mcp` returns 401 for valid token** → backend can't reach SQLite. Check
+  the `waha-claude-data` PVC is mounted at `/app/data` and the pod is running
+  as the `node` user (UID 1000).
+- **`/signup` returns 403** even with the invite code → `INVITE_CODE` in the
+  secret is empty or wrong; the gate requires an exact match.
+
+---
 
 ## Notes
 
-- **Single replica.** SQLite + PVC means `replicas: 1`. Swap to Postgres
-  (Azure Database for PostgreSQL Flexible Server is fine) and bump replicas
-  if you need HA. The schema is in `server/src/db.ts`.
-- **Backups.** Snapshot the PVC daily, or just dump `app.db` to blob storage.
-  Losing it means every user has to re-signup and re-link WhatsApp.
-- **Rate limits.** The deployment sets `SEND_MAX_PER_WINDOW=30` and
-  `SEND_WINDOW_SECONDS=60` (per user). Tighten or loosen via ConfigMap.
-- **Open signup.** If `INVITE_CODE` is not set, anyone with the hostname can
-  create accounts. Keep it set in production.
-- **Logs.** `Authorization` and `X-Api-Key` are redacted by the Fastify logger.
-  Bind `kubectl logs` to an audit pipeline if you need long-term retention.
+- WAHA runs as its own service and must **never** be exposed publicly — it is
+  ClusterIP-only and has no Ingress. The backend reaches it in-cluster via
+  `WAHA_URL`.
+- WAHA session auth lives on the `waha-sessions` PVC; deleting that volume
+  unpairs every connected user (they must re-scan QR).
+- The waha-claude backend's user accounts + send audit log live on the
+  `waha-claude-data` PVC; deleting that volume revokes every issued bearer
+  token and forces every user to re-signup.
+- SQLite on PVC means `replicas: 1`, `strategy: Recreate`. Swap to Azure
+  Database for PostgreSQL Flexible Server if you ever need HA — the schema
+  in `server/src/db.ts` is tiny (two tables) and easy to port.

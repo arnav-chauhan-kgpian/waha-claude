@@ -2,14 +2,15 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: waha-claude-config
-  namespace: waha-claude
+  namespace: waha-claude-prod
 data:
-  # Public URL where Claude (web or skill) reaches this backend.
-  PUBLIC_BASE_URL: "https://wa.example.com"
-  # In-cluster URL for WAHA Plus. Adjust namespace/service name to match your deploy.
-  WAHA_URL: "http://waha.waha.svc.cluster.local:3000"
   PORT: "8080"
+  PUBLIC_BASE_URL: "https://waha-claude.limechat.ai"
+  # In-cluster URL for the WAHA Plus Service defined in waha.yaml.
+  # Stays inside the namespace; never reach over the public internet.
+  WAHA_URL: "http://waha.waha-claude-prod.svc.cluster.local:3000"
   DATA_DIR: "/app/data"
+  # Per-user /send rate limit. Token bucket of N sends per window seconds.
   SEND_MAX_PER_WINDOW: "30"
   SEND_WINDOW_SECONDS: "60"
   LOG_LEVEL: "info"

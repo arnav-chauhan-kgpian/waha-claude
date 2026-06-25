@@ -1,39 +1,54 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: waha-claude-data
+  namespace: waha-claude-prod
+  labels:
+    app: waha-claude
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # Holds the SQLite users + audit_log DB. Tens of MB at most for years.
+      # Do not delete this volume — losing it logs out every paired user.
+      storage: 2Gi
+  # storageClassName omitted → uses the cluster default (AKS: managed-csi).
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: waha-claude
-  namespace: waha-claude
+  namespace: waha-claude-prod
   labels:
     app: waha-claude
 spec:
-  # SQLite-on-PVC means single-replica. Bump to Postgres if you need HA.
   replicas: 1
+  # Recreate (not RollingUpdate): the PVC is ReadWriteOnce, so two pods can't
+  # mount it at once. Recreate tears down the old pod before starting the new.
   strategy:
     type: Recreate
   selector:
     matchLabels:
       app: waha-claude
+  minReadySeconds: 5
   template:
     metadata:
       labels:
         app: waha-claude
     spec:
-      # Uncomment if pulling from a private GitLab registry. The secret is
-      # created in HANDOFF.md → "Pulling from a private GitLab registry".
-      # imagePullSecrets:
-      #   - name: gitlab-pull
       containers:
-        - name: api
-          image: registry.gitlab.com/your-group/waha-claude:latest
-          imagePullPolicy: IfNotPresent
-          ports:
-            - name: http
-              containerPort: 8080
+        - name: server
+          image: acrlcpub.azurecr.io/waha-claude:prod
+          imagePullPolicy: Always
           envFrom:
             - configMapRef:
                 name: waha-claude-config
             - secretRef:
                 name: waha-claude-secrets
+          ports:
+            - name: http
+              containerPort: 8080
           readinessProbe:
             httpGet:
               path: /healthz
@@ -51,7 +66,7 @@ spec:
               cpu: 100m
               memory: 192Mi
             limits:
-              cpu: 1000m
+              cpu: 500m
               memory: 512Mi
           volumeMounts:
             - name: data
@@ -59,10 +74,10 @@ spec:
           securityContext:
             runAsNonRoot: true
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
             capabilities:
               drop: ["ALL"]
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: waha-claude-data
+      restartPolicy: Always

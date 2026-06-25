@@ -9,3 +9,6 @@ server/data*/
 *.db-wal
 .mcp.json
 tmp/
+# Populated production secret — copy from k8s/secret.example.yaml, fill in,
+# apply with kubectl. Never commit.
+k8s/secret.yaml

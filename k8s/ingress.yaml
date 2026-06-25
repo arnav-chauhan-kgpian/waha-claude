@@ -1,28 +1,24 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: waha-claude
-  namespace: waha-claude
   annotations:
-    # cert-manager (install separately). Set the issuer name you use.
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-    # NGINX Ingress hints — drop or swap if you use a different controller.
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/proxy-body-size: "2m"
+    cert-manager.io/cluster-issuer: le-az-http-certissuer-prod
+  name: waha-claude-ingress
+  namespace: waha-claude-prod
 spec:
-  ingressClassName: nginx
-  tls:
-    - hosts:
-        - wa.example.com
-      secretName: waha-claude-tls
+  ingressClassName: traefik
   rules:
-    - host: wa.example.com
+    - host: waha-claude.limechat.ai
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: waha-claude
+                name: waha-claude-service
                 port:
-                  number: 80
+                  number: 8080
+  tls:
+    - hosts:
+        - waha-claude.limechat.ai
+      secretName: tls-waha-claude-ingress
