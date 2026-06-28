@@ -258,7 +258,7 @@ async function main() {
   if (!token) {
     // The email is only a local account id. Auto-generate a unique one so the
     // setup never collides with a previous signup (HTTP 409). Override with --email.
-    const email = opt("email", `me+${randomBytes(4).toString("hex")}@local`);
+    const email = opt("email", `me+${randomBytes(4).toString("hex")}@example.com`);
     console.log(`Signing up local account: ${email}`);
     const resp = await fetch(`${BASE}/signup`, {
       method: "POST",
