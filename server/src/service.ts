@@ -94,19 +94,19 @@ export async function listChatsWithNames(user: User, limit?: number) {
   const byPhone = new Map<string, string>();
   for (const c of contacts as any[]) {
     const id: string = c.id ?? "";
-    const key: string = c.phoneNumber ?? id;
+    const phone: string = c.phoneNumber ?? id.split("@")[0] ?? "";
     const name: string | undefined = c.name;
-    if (!key || !name) continue;
-    if (id.endsWith("@c.us")) {
-      byPhone.set(key, name);
-    } else if (!byPhone.has(key)) {
-      byPhone.set(key, name);
-    }
+    if (!name) continue;
+    const preferCus = id.endsWith("@c.us");
+    // Index by both the raw phone digits and the full @c.us id so lookups hit regardless of format.
+    if (phone && (preferCus || !byPhone.has(phone))) byPhone.set(phone, name);
+    if (id && (preferCus || !byPhone.has(id))) byPhone.set(id, name);
   }
   const chats = normalizeChats(rawChats);
   for (const c of chats) {
     if (!c.name && c.id) {
-      const stitched = byPhone.get(c.id);
+      const phoneDigits = c.id.split("@")[0];
+      const stitched = byPhone.get(c.id) ?? byPhone.get(phoneDigits);
       if (stitched) c.name = stitched;
     }
     // If the name is null or the masked form WhatsApp uses for non-saved
