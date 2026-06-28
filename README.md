@@ -20,7 +20,7 @@ You need:
 Then:
 
 ```bash
-git clone https://gitlab.com/wavicletech/ai-projects/wa.git waha-claude
+git clone https://github.com/arnav-chauhan-kgpian/waha-claude.git
 cd waha-claude
 
 docker login                     # username: devlikeapro, password: your WAHA Plus token
