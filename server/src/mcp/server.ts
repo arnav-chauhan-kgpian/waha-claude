@@ -78,9 +78,9 @@ function buildServer(user: User): McpServer {
   server.tool(
     "list_chats",
     "List the user's recent WhatsApp chats with id, name, lastMessageAt, and unreadCount. Names for 1:1 chats are stitched in from the user's WhatsApp contacts.",
-    { limit: z.number().int().min(1).max(200).optional() },
+    { limit: z.number().int().min(1).optional() },
     async ({ limit }) => {
-      const chats = await listChatsWithNames(user, limit ?? 50);
+      const chats = await listChatsWithNames(user, limit ?? 0);
       return text(chats);
     }
   );
