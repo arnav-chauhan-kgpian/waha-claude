@@ -1,29 +1,47 @@
 #!/usr/bin/env node
 // One-command self-host setup. Cross-platform. Stdlib + Docker only.
 //
-//   node setup.mjs
+//   node setup.mjs                 # configure everything it finds, no questions
+//   node setup.mjs --email me@x    # pin the local signup id (default: auto-generated)
+//   node setup.mjs --skip-global   # don't touch ~/.claude.json (Claude Code user scope)
+//   node setup.mjs --skip-desktop  # don't touch Claude Desktop's config
 //
-// What it does:
+// What it does (all automatic — no prompts):
 //   1. Verifies Docker is installed and runnable.
 //   2. Creates .env with strong random WAHA_API_KEY and INVITE_CODE if missing.
 //   3. `docker compose up -d --build` (pulls WAHA, builds backend).
 //   4. Waits for the backend to become healthy.
-//   5. Signs you up with the email you provide, mints a token.
-//   6. Writes .mcp.json so Claude Code (launched from this dir) picks it up.
-//   7. Prints copy-paste config for Claude Desktop and Claude.ai web too.
+//   5. Signs you up (auto-generated local email) and mints a token.
+//   6. Registers the WhatsApp connector with EVERY Claude it finds:
+//        • Claude Code  — user scope (~/.claude.json) so it works from ANY directory,
+//                         plus this repo's .mcp.json for project scope.
+//        • Claude Desktop — merged into claude_desktop_config.json.
+//      and prints the claude.ai (web) tunnel steps.
 //
-// Re-runs are safe: if .mcp.json already has a token, it's reused.
+// Re-runs are safe: if .mcp.json already has a token, it's reused; every registration
+// step is idempotent (it overwrites only the `whatsapp` entry, leaving the rest alone).
 
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
-import { createInterface } from "node:readline/promises";
 import { setTimeout as wait } from "node:timers/promises";
 
 const PORT = 8080;
 const BASE = `http://localhost:${PORT}`;
+
+// --- tiny arg parser ---------------------------------------------------------
+const argv = process.argv.slice(2);
+function flag(name) { return argv.includes(`--${name}`); }
+function opt(name, def) {
+  const i = argv.indexOf(`--${name}`);
+  return i !== -1 && argv[i + 1] ? argv[i + 1] : def;
+}
+if (flag("help")) {
+  console.log("Usage: node setup.mjs [--email me@example.com] [--skip-global] [--skip-desktop]");
+  process.exit(0);
+}
 
 function tryExec(cmd) {
   try { execSync(cmd, { stdio: "ignore" }); return true; } catch { return false; }
@@ -42,6 +60,33 @@ function findDocker() {
     }
   }
   if (tryExec("docker --version")) return "docker";
+  return null;
+}
+
+// Locate the Claude Code CLI so we can register at user scope the supported way.
+// Returns an absolute path / "claude", or null if it isn't installed.
+function findClaude() {
+  const home = homedir();
+  const candidates = [];
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA ?? join(home, "AppData", "Roaming");
+    const localApp = process.env.LOCALAPPDATA ?? join(home, "AppData", "Local");
+    candidates.push(
+      join(appData, "npm", "claude.cmd"),
+      join(localApp, "Programs", "claude", "claude.exe"),
+      join(home, ".local", "bin", "claude.exe"),
+    );
+  } else {
+    candidates.push(
+      join(home, ".local", "bin", "claude"),
+      "/usr/local/bin/claude",
+      "/opt/homebrew/bin/claude",
+    );
+  }
+  for (const c of candidates) {
+    if (existsSync(c) && tryExec(`"${c}" --version`)) return c;
+  }
+  if (tryExec("claude --version")) return "claude";
   return null;
 }
 
@@ -75,12 +120,24 @@ async function pollHealth(timeoutMs = 90_000) {
   return false;
 }
 
-async function ask(prompt, def = "") {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const suffix = def ? ` [${def}]` : "";
-  const v = (await rl.question(`${prompt}${suffix}: `)).trim();
-  rl.close();
-  return v || def;
+// --- JSON config helpers -----------------------------------------------------
+function mergeJsonConfig(path, mutate, { backup = false } = {}) {
+  let cfg = {};
+  if (existsSync(path)) {
+    try {
+      cfg = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      return { ok: false, reason: `${path} exists but isn't valid JSON` };
+    }
+    if (backup) {
+      try { copyFileSync(path, `${path}.bak`); } catch { /* best effort */ }
+    }
+  } else {
+    mkdirSync(dirname(path), { recursive: true });
+  }
+  mutate(cfg);
+  writeFileSync(path, JSON.stringify(cfg, null, 2) + "\n");
+  return { ok: true, path };
 }
 
 function claudeDesktopConfigPath() {
@@ -94,28 +151,42 @@ function claudeDesktopConfigPath() {
   return `${homedir()}/.config/Claude/claude_desktop_config.json`;
 }
 
-function isClaudeDesktopInstalled() {
-  // We treat "Claude config dir exists" as "the app has been run at least once".
-  return existsSync(dirname(claudeDesktopConfigPath()));
+const claudeCodeUserConfigPath = () => join(homedir(), ".claude.json");
+
+// Register the connector for Claude Code at USER scope so it's available from
+// every directory ("whole Claude"). Prefer the CLI (it handles locking); fall
+// back to editing ~/.claude.json directly with a backup.
+function registerClaudeCodeUser(server) {
+  const claude = findClaude();
+  if (claude) {
+    // Replace any prior entry, then add fresh.
+    spawnSync(claude, ["mcp", "remove", "--scope", "user", "whatsapp"], { stdio: "ignore" });
+    const r = spawnSync(claude, [
+      "mcp", "add", "--scope", "user", "--transport", "http",
+      "whatsapp", server.url, "--header", `Authorization: Bearer ${server.headers.Authorization.slice("Bearer ".length)}`,
+    ], { stdio: "ignore" });
+    if (r.status === 0) return { ok: true, how: `claude mcp add --scope user (${claude})` };
+    // fall through to direct edit if the CLI call failed
+  }
+  const path = claudeCodeUserConfigPath();
+  const res = mergeJsonConfig(path, (cfg) => {
+    cfg.mcpServers = cfg.mcpServers || {};
+    cfg.mcpServers.whatsapp = server;
+  }, { backup: true });
+  if (!res.ok) return { ok: false, how: res.reason };
+  return { ok: true, how: `edited ${path} (backup at ${path}.bak)`, restart: true };
 }
 
-async function maybeInstallDesktopConfig(mcpConfig) {
+function registerClaudeDesktop(server) {
   const path = claudeDesktopConfigPath();
-  let existing = {};
-  if (existsSync(path)) {
-    try {
-      existing = JSON.parse(readFileSync(path, "utf8"));
-    } catch {
-      console.log(`\n${path} exists but isn't valid JSON. Skipping Desktop install — fix the file first and re-run.`);
-      return false;
-    }
-  } else {
-    mkdirSync(dirname(path), { recursive: true });
-  }
-  existing.mcpServers = existing.mcpServers || {};
-  existing.mcpServers.whatsapp = mcpConfig.mcpServers.whatsapp;
-  writeFileSync(path, JSON.stringify(existing, null, 2) + "\n");
-  return true;
+  // Only configure Desktop if it's actually installed (config dir present).
+  if (!existsSync(dirname(path))) return { ok: false, how: "not installed" };
+  const res = mergeJsonConfig(path, (cfg) => {
+    cfg.mcpServers = cfg.mcpServers || {};
+    cfg.mcpServers.whatsapp = server;
+  });
+  if (!res.ok) return { ok: false, how: res.reason };
+  return { ok: true, how: path, restart: true };
 }
 
 async function main() {
@@ -127,7 +198,7 @@ async function main() {
     console.error("Docker not found. Install Docker Desktop from https://www.docker.com/products/docker-desktop/, then open a fresh terminal and re-run this script.");
     process.exit(1);
   }
-  if (!tryExec(`${docker} info`)) {
+  if (!tryExec(`"${docker}" info`)) {
     console.error("Docker is installed but not running. Start Docker Desktop and re-run.");
     process.exit(1);
   }
@@ -185,7 +256,10 @@ async function main() {
   }
 
   if (!token) {
-    const email = await ask("Your email (anything — used only as a local account id)", "me@example.com");
+    // The email is only a local account id. Auto-generate a unique one so the
+    // setup never collides with a previous signup (HTTP 409). Override with --email.
+    const email = opt("email", `me+${randomBytes(4).toString("hex")}@local`);
+    console.log(`Signing up local account: ${email}`);
     const resp = await fetch(`${BASE}/signup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -194,7 +268,7 @@ async function main() {
     if (!resp.ok) {
       const body = await resp.text();
       if (resp.status === 409) {
-        console.error(`\nThat email already exists in this backend's database. Either pick a different email and re-run, or wipe the local state:\n  ${docker} compose down -v\n  (then delete server/data/ if you're outside Docker)\n  node setup.mjs`);
+        console.error(`\nThat email already exists in this backend's database. Re-run with a different --email, or wipe local state:\n  ${docker} compose down -v\n  node setup.mjs`);
       } else {
         console.error(`\nSignup failed (HTTP ${resp.status}): ${body}`);
       }
@@ -203,73 +277,57 @@ async function main() {
     ({ token } = await resp.json());
   }
 
-  // 6. Write .mcp.json
-  const mcpConfig = {
-    mcpServers: {
-      whatsapp: {
-        type: "http",
-        url: mcpUrl,
-        headers: { Authorization: `Bearer ${token}` },
-      },
-    },
+  // 6. The single connector definition we register everywhere.
+  const server = {
+    type: "http",
+    url: mcpUrl,
+    headers: { Authorization: `Bearer ${token}` },
   };
+  const mcpConfig = { mcpServers: { whatsapp: server } };
+
+  // 6a. Project scope — this repo's .mcp.json (so `claude` launched here just works).
   writeFileSync(".mcp.json", JSON.stringify(mcpConfig, null, 2) + "\n");
-  console.log("Wrote .mcp.json (Claude Code will pick it up when launched from this directory).\n");
 
-  // 7. Wire up the Claude clients the user actually uses
+  // 6b. Register with every Claude we can find.
+  console.log("\n================================================================");
+  console.log("Backend ready at " + BASE + " — registering the connector:");
   console.log("================================================================");
-  console.log("Backend ready at " + BASE);
-  console.log("================================================================\n");
-  console.log("Which Claude do you use?");
-  console.log("  1) Claude Desktop          (recommended — works locally, no tunnel)");
-  console.log("  2) Claude.ai (web)         (needs a Cloudflare Tunnel)");
-  console.log("  3) Claude Code CLI         (.mcp.json already wired in this dir)");
-  console.log("  4) All / I'll decide later (print configs for everything)\n");
-  const choice = await ask("Pick 1/2/3/4", "1");
 
-  const printDesktopBlock = () => {
-    console.log("\nClaude Desktop config block (already merged if you picked 1):");
-    console.log("  File: " + claudeDesktopConfigPath());
-    console.log(JSON.stringify(mcpConfig, null, 2));
-  };
-  const printWebBlock = () => {
-    console.log("\nClaude.ai web setup:");
-    console.log("  1. Install cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/");
-    console.log("  2. In a separate terminal: cloudflared tunnel --url " + BASE);
-    console.log("  3. Copy the printed https://<random>.trycloudflare.com URL.");
-    console.log("  4. claude.ai → Settings → Connectors → Add custom connector:");
-    console.log("     URL:    <that URL>/mcp");
-    console.log("     Header: Authorization: Bearer <token from .mcp.json>");
-  };
-  const printCliNote = () => {
-    console.log("\nClaude Code CLI: `.mcp.json` is in this directory. From a fresh");
-    console.log("terminal where the `claude` command is on PATH, run:");
-    console.log("    cd " + process.cwd());
-    console.log("    claude");
-    console.log("Then ask: Connect my WhatsApp");
-  };
+  const results = [];
+  results.push(["Claude Code (project: ./.mcp.json)", { ok: true, how: process.cwd() }]);
 
-  if (choice === "1" || choice === "4") {
-    if (!isClaudeDesktopInstalled() && choice === "1") {
-      console.log("\nClaude Desktop config dir not found at " + dirname(claudeDesktopConfigPath()));
-      console.log("Install Claude Desktop from https://claude.ai/download, run it once, then re-run this script.");
-    } else {
-      const installed = await maybeInstallDesktopConfig(mcpConfig);
-      if (installed) {
-        console.log("\nMerged the WhatsApp connector into Claude Desktop's config.");
-        console.log("→ Restart Claude Desktop, then ask it: \"Connect my WhatsApp\".");
-      }
-    }
-    if (choice === "4") printDesktopBlock();
+  if (flag("skip-global")) {
+    results.push(["Claude Code (user / global)", { ok: false, how: "skipped (--skip-global)" }]);
+  } else {
+    results.push(["Claude Code (user / global)", registerClaudeCodeUser(server)]);
   }
 
-  if (choice === "2" || choice === "4") {
-    printWebBlock();
+  if (flag("skip-desktop")) {
+    results.push(["Claude Desktop", { ok: false, how: "skipped (--skip-desktop)" }]);
+  } else {
+    results.push(["Claude Desktop", registerClaudeDesktop(server)]);
   }
 
-  if (choice === "3" || choice === "4") {
-    printCliNote();
+  let needRestart = false;
+  for (const [name, r] of results) {
+    console.log(`  ${r.ok ? "✓" : "•"} ${name}: ${r.how}`);
+    if (r.ok && r.restart) needRestart = true;
   }
+
+  // 6c. Web can't be automated (no localhost from claude.ai) — print the steps.
+  console.log("\nClaude.ai (web) — needs a free tunnel:");
+  console.log("  1. Install cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/");
+  console.log("  2. In a separate terminal: cloudflared tunnel --url " + BASE);
+  console.log("  3. claude.ai → Settings → Connectors → Add custom connector:");
+  console.log("       URL:    https://<random>.trycloudflare.com/mcp");
+  console.log("       Header: Authorization: Bearer <token from .mcp.json>");
+
+  console.log("\n----------------------------------------------------------------");
+  if (needRestart) {
+    console.log("Restart Claude (Desktop / any open Claude Code) to pick up the connector.");
+  }
+  console.log('Then ask your Claude: "Connect my WhatsApp"');
+  console.log("----------------------------------------------------------------");
 
   console.log("\nUseful:");
   console.log("  docker compose logs -f backend      # tail logs");
