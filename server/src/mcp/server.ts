@@ -80,7 +80,7 @@ function buildServer(user: User): McpServer {
     "List the user's recent WhatsApp chats with id, name, lastMessageAt, and unreadCount. Names for 1:1 chats are stitched in from the user's WhatsApp contacts.",
     { limit: z.number().int().min(1).optional() },
     async ({ limit }) => {
-      const chats = await listChatsWithNames(user, limit ?? 0);
+      const chats = await listChatsWithNames(user, limit);
       return text(chats);
     }
   );
@@ -112,11 +112,11 @@ function buildServer(user: User): McpServer {
     "summarize_unread",
     "Fetch unread chats with their latest messages. The caller (Claude) should categorize them into: Action Required, Awaiting Replies, Important Updates, Low Priority.",
     {
-      limit_chats: z.number().int().min(1).max(50).optional(),
+      limit_chats: z.number().int().min(1).optional(),
       messages_per_chat: z.number().int().min(1).max(50).optional(),
     },
     async ({ limit_chats, messages_per_chat }) => {
-      const chats = await listChatsWithNames(user, limit_chats ?? 20);
+      const chats = await listChatsWithNames(user, limit_chats);
       const unread = chats.filter((c) => (c.unreadCount ?? 0) > 0);
       const enriched = await Promise.all(
         unread.map(async (c) => {

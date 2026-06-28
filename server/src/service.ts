@@ -83,7 +83,7 @@ export function normalizeMessages(msgs: WahaMessage[]) {
 // One source of truth for "list chats but with the user's contact names stitched in."
 // NOWEB's /chats endpoint returns names only for groups/newsletters; for 1:1 chats
 // the name comes from the user's address book, which is exposed via /contacts/all.
-export async function listChatsWithNames(user: User, limit: number) {
+export async function listChatsWithNames(user: User, limit?: number) {
   const [rawChats, contacts] = await Promise.all([
     waha.listChats(user.session_name, limit),
     waha.listContacts(user.session_name).catch(() => [] as any[]),

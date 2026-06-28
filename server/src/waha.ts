@@ -110,10 +110,12 @@ export const waha = {
     );
   },
 
-  async listChats(name: string, limit = 50): Promise<WahaChat[]> {
+  async listChats(name: string, limit?: number): Promise<WahaChat[]> {
+    const qs = new URLSearchParams({ sortBy: "conversationTimestamp", sortOrder: "desc" });
+    if (limit) qs.set("limit", String(limit));
     return await call<WahaChat[]>(
       "GET",
-      `/api/${encodeURIComponent(name)}/chats?limit=${limit}&sortBy=conversationTimestamp&sortOrder=desc`
+      `/api/${encodeURIComponent(name)}/chats?${qs}`
     );
   },
 
