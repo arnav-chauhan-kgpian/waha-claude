@@ -86,6 +86,16 @@ function buildServer(user: User): McpServer {
   );
 
   server.tool(
+    "list_contacts",
+    "List all contacts from the user's WhatsApp address book with their id, name, and phone number.",
+    {},
+    async () => {
+      const contacts = await waha.listContacts(user.session_name);
+      return text(contacts);
+    }
+  );
+
+  server.tool(
     "get_messages",
     "Get recent messages from a specific chat. chatId looks like 12345@c.us / 12345@s.whatsapp.net (user) or 12345@g.us (group). Each message includes a human-readable `author` resolved from the user's contacts.",
     {
